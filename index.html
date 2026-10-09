@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="en" class="dark">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Gold Backtesting Tracker | LSE &amp; DRE Strategy Analytics</title>
+    <meta name="description" content="Professional trading backtesting tracker with Liquidity Sweep Entry (LSE) and Demand Reaction Entry (DRE) comparative analytics for Gold (XAU/USD)." />
+    <meta property="og:title" content="Gold Backtesting Tracker | LSE &amp; DRE Strategy Analytics" />
+    <meta property="og:description" content="Professional trading backtesting tracker with Liquidity Sweep Entry (LSE) and Demand Reaction Entry (DRE) comparative analytics for Gold (XAU/USD)." />
+    <meta property="og:type" content="website" />
+    <meta name="twitter:card" content="summary_large_image" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
+    <script>
+      try {
+        const saved = localStorage.getItem('trader_discipline_theme');
+        if (saved === 'light') {
+          document.documentElement.classList.remove('dark');
+        } else {
+          document.documentElement.classList.add('dark');
+        }
+      } catch (e) {
+        document.documentElement.classList.add('dark');
+      }
+    </script>
+  </head>
+  <body class="bg-[#070b12] text-slate-100">
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>
+

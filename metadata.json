@@ -1,0 +1,8 @@
+{
+  "name": "Remix Trader Discipline Main \u003e✨✨",
+  "description": "A minimal, professional personal trading discipline and practice tracker designed to develop long-term professional trading habits.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
