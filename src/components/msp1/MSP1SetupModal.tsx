@@ -19,6 +19,8 @@ import {
   Percent,
   Check,
   Compass,
+  ClipboardPaste,
+  Clipboard,
 } from 'lucide-react';
 import { optimizeChartImage } from '../../utils/imageOptimizer.ts';
 import { getTodayLocalDate, msp1Store } from '../../utils/msp1Store.ts';
@@ -98,10 +100,14 @@ export const MSP1SetupModal: React.FC<MSP1SetupModalProps> = ({
   const [lossReason, setLossReason] = useState<LossReason | ''>('');
   const [notes, setNotes] = useState<string>('');
 
-  // --- 6. Screenshots ---
+  // --- 6. Screenshots & Clipboard Paste Support ---
+  type ScreenshotSlot = 'beforeEntry' | 'entry' | 'afterTrade';
   const [beforeEntryScreenshot, setBeforeEntryScreenshot] = useState<string>('');
   const [entryScreenshot, setEntryScreenshot] = useState<string>('');
   const [afterTradeScreenshot, setAfterTradeScreenshot] = useState<string>('');
+  const [activeScreenshotSlot, setActiveScreenshotSlot] = useState<ScreenshotSlot>('beforeEntry');
+  const [draggingSlot, setDraggingSlot] = useState<ScreenshotSlot | null>(null);
+  const [pasteFeedback, setPasteFeedback] = useState<string | null>(null);
 
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -327,20 +333,120 @@ export const MSP1SetupModal: React.FC<MSP1SetupModalProps> = ({
     }
   };
 
-  // Screenshot Upload Helper
-  const handleScreenshotUpload = async (
-    e: React.ChangeEvent<HTMLInputElement>,
-    setter: (b64: string) => void
-  ) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
+  // Screenshot Processing & Optimization
+  const getSlotDisplayName = (slot: ScreenshotSlot) => {
+    switch (slot) {
+      case 'beforeEntry': return 'Before Entry (Setup)';
+      case 'entry': return 'Entry Confirmation (M5/M15)';
+      case 'afterTrade': return 'After Trade (Outcome)';
+    }
+  };
+
+  const processImageFile = async (file: File | Blob, slot: ScreenshotSlot) => {
     try {
-      const optimized = await optimizeChartImage(file);
-      setter(optimized.dataUrl);
+      const fileObj =
+        file instanceof File
+          ? file
+          : new File([file], `${slot}-chart.png`, { type: file.type || 'image/png' });
+
+      const optimized = await optimizeChartImage(fileObj);
+      if (slot === 'beforeEntry') setBeforeEntryScreenshot(optimized.dataUrl);
+      else if (slot === 'entry') setEntryScreenshot(optimized.dataUrl);
+      else if (slot === 'afterTrade') setAfterTradeScreenshot(optimized.dataUrl);
+
+      setPasteFeedback(`Copied image pasted into ${getSlotDisplayName(slot)}!`);
+      setTimeout(() => setPasteFeedback(null), 3500);
     } catch (err: any) {
       setError(err?.message || 'Failed to process chart screenshot');
     }
   };
+
+  // Screenshot Upload From File Input
+  const handleScreenshotUpload = async (
+    e: React.ChangeEvent<HTMLInputElement>,
+    slot: ScreenshotSlot
+  ) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    await processImageFile(file, slot);
+    e.target.value = '';
+  };
+
+  // Paste from System Clipboard Button
+  const handlePasteFromClipboard = async (slot: ScreenshotSlot) => {
+    setActiveScreenshotSlot(slot);
+    try {
+      if (navigator.clipboard && navigator.clipboard.read) {
+        const items = await navigator.clipboard.read();
+        for (const item of items) {
+          const imageType = item.types.find((t) => t.startsWith('image/'));
+          if (imageType) {
+            const blob = await item.getType(imageType);
+            await processImageFile(blob, slot);
+            return;
+          }
+        }
+        setPasteFeedback('No image copied yet. Copy chart (Ctrl+C / TradingView) first.');
+        setTimeout(() => setPasteFeedback(null), 3000);
+      } else {
+        setPasteFeedback('Click this card and press Ctrl+V on your keyboard to paste');
+        setTimeout(() => setPasteFeedback(null), 3000);
+      }
+    } catch {
+      setPasteFeedback('Click this card and press Ctrl+V on your keyboard to paste');
+      setTimeout(() => setPasteFeedback(null), 3000);
+    }
+  };
+
+  // Global window paste listener: paste anywhere in the modal!
+  useEffect(() => {
+    if (!isOpen) return;
+
+    const handleWindowPaste = async (e: ClipboardEvent) => {
+      const items = e.clipboardData?.items;
+      if (!items) return;
+
+      let imageItem: DataTransferItem | null = null;
+      for (let i = 0; i < items.length; i++) {
+        if (items[i].type.startsWith('image/')) {
+          imageItem = items[i];
+          break;
+        }
+      }
+
+      // If no image is on clipboard, let default text paste proceed
+      if (!imageItem) return;
+
+      e.preventDefault();
+      e.stopPropagation();
+
+      const blob = imageItem.getAsFile();
+      if (!blob) return;
+
+      // Smart target slot selection:
+      // 1. If user explicitly clicked/activated a slot, paste there
+      // 2. Otherwise, fill the first empty slot (beforeEntry -> entry -> afterTrade)
+      let targetSlot: ScreenshotSlot = activeScreenshotSlot;
+      if (!activeScreenshotSlot) {
+        if (!beforeEntryScreenshot) targetSlot = 'beforeEntry';
+        else if (!entryScreenshot) targetSlot = 'entry';
+        else if (!afterTradeScreenshot) targetSlot = 'afterTrade';
+        else targetSlot = 'beforeEntry';
+      }
+
+      await processImageFile(blob, targetSlot);
+
+      // Auto-advance active slot to next empty slot for lightning-fast multi-paste!
+      if (targetSlot === 'beforeEntry' && !entryScreenshot) {
+        setActiveScreenshotSlot('entry');
+      } else if (targetSlot === 'entry' && !afterTradeScreenshot) {
+        setActiveScreenshotSlot('afterTrade');
+      }
+    };
+
+    window.addEventListener('paste', handleWindowPaste);
+    return () => window.removeEventListener('paste', handleWindowPaste);
+  }, [isOpen, activeScreenshotSlot, beforeEntryScreenshot, entryScreenshot, afterTradeScreenshot]);
 
   // Submit Handler
   const handleSubmit = async (e: React.FormEvent) => {
@@ -1081,113 +1187,407 @@ export const MSP1SetupModal: React.FC<MSP1SetupModalProps> = ({
             )}
           </div>
 
-          {/* Section 6: Screenshots */}
+          {/* Section 6: Screenshots & Direct Clipboard Paste */}
           <div className="space-y-3 pt-2 border-t border-slate-800/80">
-            <h3 className="text-xs font-semibold uppercase tracking-wider text-slate-400">
-              6. Chart Screenshots & Visual Evidence
-            </h3>
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+              <div className="flex items-center gap-2">
+                <h3 className="text-xs font-semibold uppercase tracking-wider text-slate-300">
+                  6. Chart Screenshots & Visual Evidence
+                </h3>
+                {pasteFeedback && (
+                  <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[11px] font-medium bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 animate-pulse">
+                    <Check className="w-3 h-3" />
+                    {pasteFeedback}
+                  </span>
+                )}
+              </div>
+              <div className="flex items-center gap-1.5 text-[11px] text-amber-400/90 font-mono">
+                <ClipboardPaste className="w-3.5 h-3.5" />
+                <span>Tip: Copy chart (Ctrl+C / TradingView) &amp; press <strong>Ctrl+V</strong> to paste</span>
+              </div>
+            </div>
+
             <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-              {/* Before Entry */}
-              <div className="border border-slate-800 bg-slate-900/40 rounded-xl p-3 flex flex-col items-center justify-center text-center">
-                <span className="text-xs font-medium text-slate-300 mb-2">Before Entry (Setup)</span>
-                {beforeEntryScreenshot ? (
-                  <div className="relative w-full aspect-video rounded-lg overflow-hidden border border-slate-700 group">
-                    <img
-                      src={beforeEntryScreenshot}
-                      alt="Before Entry"
-                      className="w-full h-full object-cover"
-                      referrerPolicy="no-referrer"
-                    />
-                    <button
-                      type="button"
-                      onClick={() => setBeforeEntryScreenshot('')}
-                      className="absolute top-1.5 right-1.5 p-1 rounded-md bg-black/70 text-rose-400 hover:text-rose-300 transition-colors"
-                      title="Remove image"
-                    >
-                      <Trash2 className="w-3.5 h-3.5" />
-                    </button>
-                  </div>
-                ) : (
-                  <label className="w-full aspect-video border border-dashed border-slate-800 rounded-lg flex flex-col items-center justify-center hover:border-slate-700 transition-colors cursor-pointer text-slate-400 hover:text-slate-200">
-                    <Camera className="w-5 h-5 mb-1" />
-                    <span className="text-[11px]">Upload Chart</span>
-                    <input
-                      type="file"
-                      accept="image/*"
-                      onChange={(e) => handleScreenshotUpload(e, setBeforeEntryScreenshot)}
-                      className="hidden"
-                    />
-                  </label>
-                )}
-              </div>
+              {/* Slot 1: Before Entry */}
+              {(() => {
+                const isSelected = activeScreenshotSlot === 'beforeEntry';
+                const isDragging = draggingSlot === 'beforeEntry';
+                return (
+                  <div
+                    tabIndex={0}
+                    onClick={() => setActiveScreenshotSlot('beforeEntry')}
+                    onFocus={() => setActiveScreenshotSlot('beforeEntry')}
+                    onDragOver={(e) => {
+                      e.preventDefault();
+                      setDraggingSlot('beforeEntry');
+                    }}
+                    onDragLeave={() => setDraggingSlot(null)}
+                    onDrop={async (e) => {
+                      e.preventDefault();
+                      setDraggingSlot(null);
+                      const file = e.dataTransfer.files?.[0];
+                      if (file && file.type.startsWith('image/')) {
+                        await processImageFile(file, 'beforeEntry');
+                      }
+                    }}
+                    className={`relative rounded-xl p-3 flex flex-col items-center justify-center text-center transition-all cursor-pointer outline-hidden border ${
+                      isDragging
+                        ? 'border-amber-400 bg-amber-500/10 ring-2 ring-amber-400/50'
+                        : isSelected
+                        ? 'border-amber-500/80 bg-slate-900/80 ring-1 ring-amber-500/40 shadow-lg'
+                        : 'border-slate-800 bg-slate-900/40 hover:border-slate-700 hover:bg-slate-900/60'
+                    }`}
+                  >
+                    <div className="w-full flex items-center justify-between mb-2">
+                      <span className="text-xs font-semibold text-slate-200">Before Entry (Setup)</span>
+                      {isSelected ? (
+                        <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-300 font-bold border border-amber-500/30">
+                          Active (Ctrl+V)
+                        </span>
+                      ) : (
+                        <span className="text-[10px] font-mono text-slate-500">Click to select</span>
+                      )}
+                    </div>
 
-              {/* Entry Execution */}
-              <div className="border border-slate-800 bg-slate-900/40 rounded-xl p-3 flex flex-col items-center justify-center text-center">
-                <span className="text-xs font-medium text-slate-300 mb-2">Entry Confirmation (M5/M15)</span>
-                {entryScreenshot ? (
-                  <div className="relative w-full aspect-video rounded-lg overflow-hidden border border-slate-700 group">
-                    <img
-                      src={entryScreenshot}
-                      alt="Entry Execution"
-                      className="w-full h-full object-cover"
-                      referrerPolicy="no-referrer"
-                    />
-                    <button
-                      type="button"
-                      onClick={() => setEntryScreenshot('')}
-                      className="absolute top-1.5 right-1.5 p-1 rounded-md bg-black/70 text-rose-400 hover:text-rose-300 transition-colors"
-                      title="Remove image"
-                    >
-                      <Trash2 className="w-3.5 h-3.5" />
-                    </button>
+                    {beforeEntryScreenshot ? (
+                      <div className="relative w-full aspect-video rounded-lg overflow-hidden border border-slate-700 group bg-slate-950">
+                        <img
+                          src={beforeEntryScreenshot}
+                          alt="Before Entry"
+                          className="w-full h-full object-cover"
+                          referrerPolicy="no-referrer"
+                        />
+                        <div className="absolute inset-0 bg-slate-950/70 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center gap-2 p-2">
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              handlePasteFromClipboard('beforeEntry');
+                            }}
+                            className="px-2.5 py-1.5 rounded-lg bg-amber-500 text-slate-950 font-bold text-[11px] flex items-center gap-1 hover:bg-amber-400 cursor-pointer shadow-md"
+                            title="Paste copied image from clipboard"
+                          >
+                            <ClipboardPaste className="w-3.5 h-3.5" />
+                            Paste New
+                          </button>
+                          <label
+                            onClick={(e) => e.stopPropagation()}
+                            className="px-2 py-1.5 rounded-lg bg-slate-800 text-slate-200 text-[11px] font-medium flex items-center gap-1 hover:bg-slate-700 cursor-pointer border border-slate-700"
+                            title="Upload from computer"
+                          >
+                            <Upload className="w-3 h-3" />
+                            File
+                            <input
+                              type="file"
+                              accept="image/*"
+                              onChange={(e) => handleScreenshotUpload(e, 'beforeEntry')}
+                              className="hidden"
+                            />
+                          </label>
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setBeforeEntryScreenshot('');
+                            }}
+                            className="p-1.5 rounded-lg bg-rose-950/80 text-rose-300 hover:bg-rose-900 border border-rose-800/60 cursor-pointer"
+                            title="Remove screenshot"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </button>
+                        </div>
+                      </div>
+                    ) : (
+                      <div className="w-full aspect-video border border-dashed border-slate-800 rounded-lg flex flex-col items-center justify-center p-3 text-slate-400 group-hover:border-slate-700 transition-colors">
+                        <ClipboardPaste className={`w-6 h-6 mb-1.5 transition-colors ${isSelected ? 'text-amber-400' : 'text-slate-400'}`} />
+                        <div className="flex items-center gap-2 mb-1.5">
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              handlePasteFromClipboard('beforeEntry');
+                            }}
+                            className="px-2.5 py-1 text-[11px] font-bold rounded-md bg-amber-500/20 text-amber-300 border border-amber-500/40 hover:bg-amber-500 hover:text-slate-950 transition-colors cursor-pointer flex items-center gap-1"
+                          >
+                            <ClipboardPaste className="w-3 h-3" />
+                            Paste (Ctrl+V)
+                          </button>
+                          <label
+                            onClick={(e) => e.stopPropagation()}
+                            className="px-2 py-1 text-[11px] font-medium rounded-md bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 transition-colors cursor-pointer flex items-center gap-1"
+                          >
+                            <Upload className="w-3 h-3" />
+                            Browse
+                            <input
+                              type="file"
+                              accept="image/*"
+                              onChange={(e) => handleScreenshotUpload(e, 'beforeEntry')}
+                              className="hidden"
+                            />
+                          </label>
+                        </div>
+                        <span className="text-[10px] text-slate-400 font-mono">
+                          {isSelected ? 'Ready: Press Ctrl+V now' : 'Click to select & paste'}
+                        </span>
+                      </div>
+                    )}
                   </div>
-                ) : (
-                  <label className="w-full aspect-video border border-dashed border-slate-800 rounded-lg flex flex-col items-center justify-center hover:border-slate-700 transition-colors cursor-pointer text-slate-400 hover:text-slate-200">
-                    <Camera className="w-5 h-5 mb-1" />
-                    <span className="text-[11px]">Upload Chart</span>
-                    <input
-                      type="file"
-                      accept="image/*"
-                      onChange={(e) => handleScreenshotUpload(e, setEntryScreenshot)}
-                      className="hidden"
-                    />
-                  </label>
-                )}
-              </div>
+                );
+              })()}
 
-              {/* After Trade */}
-              <div className="border border-slate-800 bg-slate-900/40 rounded-xl p-3 flex flex-col items-center justify-center text-center">
-                <span className="text-xs font-medium text-slate-300 mb-2">After Trade (Outcome)</span>
-                {afterTradeScreenshot ? (
-                  <div className="relative w-full aspect-video rounded-lg overflow-hidden border border-slate-700 group">
-                    <img
-                      src={afterTradeScreenshot}
-                      alt="After Trade"
-                      className="w-full h-full object-cover"
-                      referrerPolicy="no-referrer"
-                    />
-                    <button
-                      type="button"
-                      onClick={() => setAfterTradeScreenshot('')}
-                      className="absolute top-1.5 right-1.5 p-1 rounded-md bg-black/70 text-rose-400 hover:text-rose-300 transition-colors"
-                      title="Remove image"
-                    >
-                      <Trash2 className="w-3.5 h-3.5" />
-                    </button>
+              {/* Slot 2: Entry Execution */}
+              {(() => {
+                const isSelected = activeScreenshotSlot === 'entry';
+                const isDragging = draggingSlot === 'entry';
+                return (
+                  <div
+                    tabIndex={0}
+                    onClick={() => setActiveScreenshotSlot('entry')}
+                    onFocus={() => setActiveScreenshotSlot('entry')}
+                    onDragOver={(e) => {
+                      e.preventDefault();
+                      setDraggingSlot('entry');
+                    }}
+                    onDragLeave={() => setDraggingSlot(null)}
+                    onDrop={async (e) => {
+                      e.preventDefault();
+                      setDraggingSlot(null);
+                      const file = e.dataTransfer.files?.[0];
+                      if (file && file.type.startsWith('image/')) {
+                        await processImageFile(file, 'entry');
+                      }
+                    }}
+                    className={`relative rounded-xl p-3 flex flex-col items-center justify-center text-center transition-all cursor-pointer outline-hidden border ${
+                      isDragging
+                        ? 'border-amber-400 bg-amber-500/10 ring-2 ring-amber-400/50'
+                        : isSelected
+                        ? 'border-amber-500/80 bg-slate-900/80 ring-1 ring-amber-500/40 shadow-lg'
+                        : 'border-slate-800 bg-slate-900/40 hover:border-slate-700 hover:bg-slate-900/60'
+                    }`}
+                  >
+                    <div className="w-full flex items-center justify-between mb-2">
+                      <span className="text-xs font-semibold text-slate-200">Entry Confirmation (M5/M15)</span>
+                      {isSelected ? (
+                        <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-300 font-bold border border-amber-500/30">
+                          Active (Ctrl+V)
+                        </span>
+                      ) : (
+                        <span className="text-[10px] font-mono text-slate-500">Click to select</span>
+                      )}
+                    </div>
+
+                    {entryScreenshot ? (
+                      <div className="relative w-full aspect-video rounded-lg overflow-hidden border border-slate-700 group bg-slate-950">
+                        <img
+                          src={entryScreenshot}
+                          alt="Entry Execution"
+                          className="w-full h-full object-cover"
+                          referrerPolicy="no-referrer"
+                        />
+                        <div className="absolute inset-0 bg-slate-950/70 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center gap-2 p-2">
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              handlePasteFromClipboard('entry');
+                            }}
+                            className="px-2.5 py-1.5 rounded-lg bg-amber-500 text-slate-950 font-bold text-[11px] flex items-center gap-1 hover:bg-amber-400 cursor-pointer shadow-md"
+                            title="Paste copied image from clipboard"
+                          >
+                            <ClipboardPaste className="w-3.5 h-3.5" />
+                            Paste New
+                          </button>
+                          <label
+                            onClick={(e) => e.stopPropagation()}
+                            className="px-2 py-1.5 rounded-lg bg-slate-800 text-slate-200 text-[11px] font-medium flex items-center gap-1 hover:bg-slate-700 cursor-pointer border border-slate-700"
+                            title="Upload from computer"
+                          >
+                            <Upload className="w-3 h-3" />
+                            File
+                            <input
+                              type="file"
+                              accept="image/*"
+                              onChange={(e) => handleScreenshotUpload(e, 'entry')}
+                              className="hidden"
+                            />
+                          </label>
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setEntryScreenshot('');
+                            }}
+                            className="p-1.5 rounded-lg bg-rose-950/80 text-rose-300 hover:bg-rose-900 border border-rose-800/60 cursor-pointer"
+                            title="Remove screenshot"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </button>
+                        </div>
+                      </div>
+                    ) : (
+                      <div className="w-full aspect-video border border-dashed border-slate-800 rounded-lg flex flex-col items-center justify-center p-3 text-slate-400 group-hover:border-slate-700 transition-colors">
+                        <ClipboardPaste className={`w-6 h-6 mb-1.5 transition-colors ${isSelected ? 'text-amber-400' : 'text-slate-400'}`} />
+                        <div className="flex items-center gap-2 mb-1.5">
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              handlePasteFromClipboard('entry');
+                            }}
+                            className="px-2.5 py-1 text-[11px] font-bold rounded-md bg-amber-500/20 text-amber-300 border border-amber-500/40 hover:bg-amber-500 hover:text-slate-950 transition-colors cursor-pointer flex items-center gap-1"
+                          >
+                            <ClipboardPaste className="w-3 h-3" />
+                            Paste (Ctrl+V)
+                          </button>
+                          <label
+                            onClick={(e) => e.stopPropagation()}
+                            className="px-2 py-1 text-[11px] font-medium rounded-md bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 transition-colors cursor-pointer flex items-center gap-1"
+                          >
+                            <Upload className="w-3 h-3" />
+                            Browse
+                            <input
+                              type="file"
+                              accept="image/*"
+                              onChange={(e) => handleScreenshotUpload(e, 'entry')}
+                              className="hidden"
+                            />
+                          </label>
+                        </div>
+                        <span className="text-[10px] text-slate-400 font-mono">
+                          {isSelected ? 'Ready: Press Ctrl+V now' : 'Click to select & paste'}
+                        </span>
+                      </div>
+                    )}
                   </div>
-                ) : (
-                  <label className="w-full aspect-video border border-dashed border-slate-800 rounded-lg flex flex-col items-center justify-center hover:border-slate-700 transition-colors cursor-pointer text-slate-400 hover:text-slate-200">
-                    <Camera className="w-5 h-5 mb-1" />
-                    <span className="text-[11px]">Upload Chart</span>
-                    <input
-                      type="file"
-                      accept="image/*"
-                      onChange={(e) => handleScreenshotUpload(e, setAfterTradeScreenshot)}
-                      className="hidden"
-                    />
-                  </label>
-                )}
-              </div>
+                );
+              })()}
+
+              {/* Slot 3: After Trade */}
+              {(() => {
+                const isSelected = activeScreenshotSlot === 'afterTrade';
+                const isDragging = draggingSlot === 'afterTrade';
+                return (
+                  <div
+                    tabIndex={0}
+                    onClick={() => setActiveScreenshotSlot('afterTrade')}
+                    onFocus={() => setActiveScreenshotSlot('afterTrade')}
+                    onDragOver={(e) => {
+                      e.preventDefault();
+                      setDraggingSlot('afterTrade');
+                    }}
+                    onDragLeave={() => setDraggingSlot(null)}
+                    onDrop={async (e) => {
+                      e.preventDefault();
+                      setDraggingSlot(null);
+                      const file = e.dataTransfer.files?.[0];
+                      if (file && file.type.startsWith('image/')) {
+                        await processImageFile(file, 'afterTrade');
+                      }
+                    }}
+                    className={`relative rounded-xl p-3 flex flex-col items-center justify-center text-center transition-all cursor-pointer outline-hidden border ${
+                      isDragging
+                        ? 'border-amber-400 bg-amber-500/10 ring-2 ring-amber-400/50'
+                        : isSelected
+                        ? 'border-amber-500/80 bg-slate-900/80 ring-1 ring-amber-500/40 shadow-lg'
+                        : 'border-slate-800 bg-slate-900/40 hover:border-slate-700 hover:bg-slate-900/60'
+                    }`}
+                  >
+                    <div className="w-full flex items-center justify-between mb-2">
+                      <span className="text-xs font-semibold text-slate-200">After Trade (Outcome)</span>
+                      {isSelected ? (
+                        <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-300 font-bold border border-amber-500/30">
+                          Active (Ctrl+V)
+                        </span>
+                      ) : (
+                        <span className="text-[10px] font-mono text-slate-500">Click to select</span>
+                      )}
+                    </div>
+
+                    {afterTradeScreenshot ? (
+                      <div className="relative w-full aspect-video rounded-lg overflow-hidden border border-slate-700 group bg-slate-950">
+                        <img
+                          src={afterTradeScreenshot}
+                          alt="After Trade"
+                          className="w-full h-full object-cover"
+                          referrerPolicy="no-referrer"
+                        />
+                        <div className="absolute inset-0 bg-slate-950/70 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center gap-2 p-2">
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              handlePasteFromClipboard('afterTrade');
+                            }}
+                            className="px-2.5 py-1.5 rounded-lg bg-amber-500 text-slate-950 font-bold text-[11px] flex items-center gap-1 hover:bg-amber-400 cursor-pointer shadow-md"
+                            title="Paste copied image from clipboard"
+                          >
+                            <ClipboardPaste className="w-3.5 h-3.5" />
+                            Paste New
+                          </button>
+                          <label
+                            onClick={(e) => e.stopPropagation()}
+                            className="px-2 py-1.5 rounded-lg bg-slate-800 text-slate-200 text-[11px] font-medium flex items-center gap-1 hover:bg-slate-700 cursor-pointer border border-slate-700"
+                            title="Upload from computer"
+                          >
+                            <Upload className="w-3 h-3" />
+                            File
+                            <input
+                              type="file"
+                              accept="image/*"
+                              onChange={(e) => handleScreenshotUpload(e, 'afterTrade')}
+                              className="hidden"
+                            />
+                          </label>
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setAfterTradeScreenshot('');
+                            }}
+                            className="p-1.5 rounded-lg bg-rose-950/80 text-rose-300 hover:bg-rose-900 border border-rose-800/60 cursor-pointer"
+                            title="Remove screenshot"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </button>
+                        </div>
+                      </div>
+                    ) : (
+                      <div className="w-full aspect-video border border-dashed border-slate-800 rounded-lg flex flex-col items-center justify-center p-3 text-slate-400 group-hover:border-slate-700 transition-colors">
+                        <ClipboardPaste className={`w-6 h-6 mb-1.5 transition-colors ${isSelected ? 'text-amber-400' : 'text-slate-400'}`} />
+                        <div className="flex items-center gap-2 mb-1.5">
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              handlePasteFromClipboard('afterTrade');
+                            }}
+                            className="px-2.5 py-1 text-[11px] font-bold rounded-md bg-amber-500/20 text-amber-300 border border-amber-500/40 hover:bg-amber-500 hover:text-slate-950 transition-colors cursor-pointer flex items-center gap-1"
+                          >
+                            <ClipboardPaste className="w-3 h-3" />
+                            Paste (Ctrl+V)
+                          </button>
+                          <label
+                            onClick={(e) => e.stopPropagation()}
+                            className="px-2 py-1 text-[11px] font-medium rounded-md bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 transition-colors cursor-pointer flex items-center gap-1"
+                          >
+                            <Upload className="w-3 h-3" />
+                            Browse
+                            <input
+                              type="file"
+                              accept="image/*"
+                              onChange={(e) => handleScreenshotUpload(e, 'afterTrade')}
+                              className="hidden"
+                            />
+                          </label>
+                        </div>
+                        <span className="text-[10px] text-slate-400 font-mono">
+                          {isSelected ? 'Ready: Press Ctrl+V now' : 'Click to select & paste'}
+                        </span>
+                      </div>
+                    )}
+                  </div>
+                );
+              })()}
             </div>
           </div>
 
